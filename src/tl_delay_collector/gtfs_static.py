@@ -8,7 +8,7 @@ from pathlib import Path
 import requests
 
 from .config import (AGENCY_NAME_HINTS, CKAN_BASE, GTFS_DATASET_CANDIDATES,
-                     ROUTE_ID_PREFIXES)
+                     GTFS_SEARCH_QUERY, ROUTE_ID_PREFIXES)
 from .models import MetaKV, Stop, StopTime, TlRoute
 from .repository import get_meta, load_tl_maps
 from .utils import log, to_int, utcnow_iso
@@ -23,29 +23,82 @@ def is_tl_agency(agency_name):
     return any(hint in name for hint in AGENCY_NAME_HINTS)
 
 
-def find_gtfs_static_url(http):
-    """Trouve l'URL du dernier ZIP GTFS statique via l'API CKAN."""
+def _zip_resources(resources):
+    """Extrait les ressources ZIP d'un dataset CKAN, de la plus récente à la
+    plus ancienne (accepte une URL en .zip ou un format/name « ZIP »)."""
+    zips = []
+    for res in resources:
+        url = str(res.get("url", ""))
+        fmt = str(res.get("format", "")).upper()
+        name = str(res.get("name", ""))
+        if url.endswith(".zip") or "ZIP" in fmt or name.lower().endswith(".zip"):
+            stamp = str(res.get("last_modified") or res.get("created") or "")
+            zips.append((stamp, url))
+    return sorted(zips, reverse=True)
+
+
+def _find_via_search(http):
+    """Recherche CKAN dynamique : dataset « timetable … gtfs » le plus récent."""
+    r = http.get(f"{CKAN_BASE}/api/3/action/package_search",
+                 params={"q": GTFS_SEARCH_QUERY, "rows": 25,
+                         "sort": "metadata_modified desc"}, timeout=60)
+    if not r.ok:
+        log.warning("CKAN package_search : HTTP %s", r.status_code)
+        return None
+    payload = r.json()
+    if not payload.get("success"):
+        return None
+    for dataset in payload.get("result", {}).get("results", []):
+        name = str(dataset.get("name", ""))
+        if "gtfs" not in name.lower():
+            continue
+        zips = _zip_resources(dataset.get("resources", []))
+        if zips:
+            log.info("GTFS statique trouvé par recherche CKAN : dataset %s",
+                     name)
+            return name, zips[0][1]
+    return None
+
+
+def _find_via_candidates(http):
+    """Repli : interroge les datasets connus un par un (package_show)."""
     for dataset in GTFS_DATASET_CANDIDATES:
         try:
             r = http.get(f"{CKAN_BASE}/api/3/action/package_show",
                          params={"id": dataset}, timeout=60)
             if not r.ok:
+                log.warning("CKAN package_show %s : HTTP %s", dataset,
+                            r.status_code)
                 continue
             payload = r.json()
             if not payload.get("success"):
                 continue
-            resources = payload.get("result", {}).get("resources", [])
-            zips = sorted(str(res["url"]) for res in resources
-                         if str(res.get("url", "")).endswith(".zip"))
+            zips = _zip_resources(payload.get("result", {}).get("resources", []))
             if zips:
-                return dataset, zips[-1]
+                return dataset, zips[0][1]
         except requests.RequestException as exc:
             log.warning("CKAN %s indisponible : %s", dataset, exc)
-    raise RuntimeError(
-        "Impossible de trouver le GTFS statique automatiquement. Téléchargez "
-        "le ZIP sur https://opendata.swiss (recherche : « horaire GTFS2020 »), "
-        "puis relancez avec --gtfs-url /chemin/vers/GTFS.zip"
-    )
+    return None
+
+
+def find_gtfs_static_url(http):
+    """Trouve l'URL du dernier ZIP GTFS statique via l'API CKAN (recherche
+    dynamique d'abord, datasets connus en repli)."""
+    try:
+        found = _find_via_search(http)
+    except requests.RequestException as exc:
+        log.warning("CKAN package_search indisponible : %s", exc)
+        found = None
+    if found is None:
+        found = _find_via_candidates(http)
+    if found is None:
+        raise RuntimeError(
+            "Impossible de trouver le GTFS statique automatiquement. "
+            "Téléchargez le ZIP sur https://opendata.swiss (recherche : "
+            "« horaire GTFS2020 »), puis relancez avec "
+            "--gtfs-url /chemin/vers/GTFS.zip"
+        )
+    return found
 
 
 def download_file(http, url, dest):
