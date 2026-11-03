@@ -2,11 +2,12 @@ from zoneinfo import ZoneInfo
 
 GTFS_RT_URL = "https://api.opentransportdata.swiss/la/gtfs-rt"
 CKAN_BASE = "https://data.opentransportdata.swiss"
-# Jeux de données GTFS statiques à essayer, du plus récent au plus ancien.
+# Jeux de données GTFS statiques de repli (recherche CKAN d'abord).
 GTFS_DATASET_CANDIDATES = [
     "timetable-2027-gtfs2020",
     "timetable-2026-gtfs2020",
 ]
+GTFS_SEARCH_QUERY = "timetable gtfs"
 USER_AGENT = "tl-delay-collector/1.0 (etude ponctualite TL)"
 
 # Détection des TL dans agency.txt : correspondance sur le nom de l'entreprise.
