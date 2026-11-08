@@ -100,10 +100,11 @@ def find_gtfs_static_url(http, api_key=None):
     if found is None:
         raise RuntimeError(
             "Impossible de trouver le GTFS statique automatiquement (l'API "
-            "CKAN api.opentransportdata.swiss/ckan-api exige une clé : passez "
-            "--api-key / OTD_API_KEY). Sinon, téléchargez le ZIP sur "
-            "https://opendata.swiss (recherche : « horaire GTFS2020 »), puis "
-            "relancez avec --gtfs-url /chemin/vers/GTFS.zip"
+            "CKAN api.opentransportdata.swiss/ckan-api exige une clé dont le "
+            "produit CKAN-API est activé dans l'API Manager : --api-key / "
+            "OTD_API_KEY). Sinon, téléchargez le ZIP sur "
+            "https://data.opentransportdata.swiss/dataset/timetable-2026-gtfs2020 "
+            "puis relancez avec --gtfs-url /chemin/vers/GTFS.zip"
         )
     return found
 
