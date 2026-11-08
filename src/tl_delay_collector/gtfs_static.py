@@ -246,6 +246,8 @@ def ensure_static(Session_factory, http, gtfs_url=None, force=False,
     tmp = tempfile.mktemp(suffix=".zip")
     try:
         if gtfs_url and not gtfs_url.startswith("http"):
+            if not os.path.exists(gtfs_url):
+                raise RuntimeError(f"Fichier GTFS introuvable : {gtfs_url}")
             import_static_zip(Session_factory, gtfs_url)
         else:
             _, url = ((None, gtfs_url) if gtfs_url
