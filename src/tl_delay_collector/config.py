@@ -1,7 +1,9 @@
 from zoneinfo import ZoneInfo
 
 GTFS_RT_URL = "https://api.opentransportdata.swiss/la/gtfs-rt"
-CKAN_BASE = "https://data.opentransportdata.swiss"
+# API CKAN officielle (via l'API Manager ; data.opentransportdata.swiss
+# renvoie HTTP 403 aux clients non navigateur sur /api/3/action).
+CKAN_API_BASE = "https://api.opentransportdata.swiss/ckan-api"
 # Jeux de données GTFS statiques de repli (recherche CKAN d'abord).
 GTFS_DATASET_CANDIDATES = [
     "timetable-2027-gtfs2020",

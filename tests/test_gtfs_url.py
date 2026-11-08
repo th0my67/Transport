@@ -1,5 +1,6 @@
 import pytest
 
+from tl_delay_collector.config import CKAN_API_BASE
 from tl_delay_collector.gtfs_static import find_gtfs_static_url
 
 
@@ -20,8 +21,8 @@ class FakeHttp:
         self.shows = shows or {}
         self.calls = []
 
-    def get(self, url, params=None, timeout=None):
-        self.calls.append(url)
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.calls.append((url, headers or {}))
         if "package_search" in url:
             return FakeResp(self.search, ok=self.search_ok,
                             status=200 if self.search_ok else 500)
@@ -85,3 +86,15 @@ def test_raises_when_nothing_found():
                     shows={})
     with pytest.raises(RuntimeError, match="GTFS statique"):
         find_gtfs_static_url(http)
+
+
+def test_uses_official_ckan_api_with_bearer_key():
+    http = FakeHttp(search={"success": True, "result": {"results": [
+        _dataset("timetable-2027-gtfs2020", ["https://x/gtfs2027.zip"]),
+    ]}})
+    name, url = find_gtfs_static_url(http, api_key="CLE-TEST")
+    assert name == "timetable-2027-gtfs2020"
+    for url_called, headers in http.calls:
+        assert url_called.startswith(CKAN_API_BASE + "/")
+        assert "/api/3/action/" not in url_called
+        assert headers.get("Authorization") == "Bearer CLE-TEST"

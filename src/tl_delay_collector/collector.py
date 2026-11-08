@@ -89,7 +89,8 @@ def run_collection(Session_factory, http, api_key, args, tl_route_ids,
         if now >= next_refresh:
             try:
                 tl_route_ids, tl_trip_routes = ensure_static(
-                    Session_factory, http, gtfs_url=args.gtfs_url, force=True)
+                    Session_factory, http, gtfs_url=args.gtfs_url, force=True,
+                    api_key=api_key)
                 next_refresh = now + timedelta(
                     hours=args.static_refresh_hours or 24)
             except Exception as exc:  # noqa: BLE001

@@ -56,10 +56,11 @@ def main():
     engine = make_engine(args.db)
     Session_factory = sessionmaker(engine)
 
-    # 1) Horaire théorique + filtres TL
+    # 1) Horaire théorique + filtres TL (l'API CKAN exige aussi la clé API)
+    api_key = args.api_key
     try:
         tl_route_ids, tl_trip_routes = ensure_static(
-            Session_factory, http, gtfs_url=args.gtfs_url)
+            Session_factory, http, gtfs_url=args.gtfs_url, api_key=api_key)
     except RuntimeError as exc:
         log.error("%s", exc)
         sys.exit(2)
@@ -68,7 +69,6 @@ def main():
         log.info("Import seul demandé : terminé.")
         return
 
-    api_key = args.api_key
     if not api_key:
         log.error("Clé API manquante : créez un compte sur "
                   "https://opentransportdata.swiss puis passez OTD_API_KEY "
