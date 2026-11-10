@@ -7,7 +7,7 @@ from pathlib import Path
 
 import requests
 
-from .config import (AGENCY_NAME_HINTS, CKAN_BASE, GTFS_DATASET_CANDIDATES,
+from .config import (AGENCY_NAME_HINTS, CKAN_API_BASE, GTFS_DATASET_CANDIDATES,
                      GTFS_SEARCH_QUERY, ROUTE_ID_PREFIXES)
 from .models import MetaKV, Stop, StopTime, TlRoute
 from .repository import get_meta, load_tl_maps
@@ -37,11 +37,16 @@ def _zip_resources(resources):
     return sorted(zips, reverse=True)
 
 
-def _find_via_search(http):
+def _auth_headers(api_key):
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
+def _find_via_search(http, api_key):
     """Recherche CKAN dynamique : dataset « timetable … gtfs » le plus récent."""
-    r = http.get(f"{CKAN_BASE}/api/3/action/package_search",
+    r = http.get(f"{CKAN_API_BASE}/package_search",
                  params={"q": GTFS_SEARCH_QUERY, "rows": 25,
-                         "sort": "metadata_modified desc"}, timeout=60)
+                         "sort": "metadata_modified desc"},
+                 headers=_auth_headers(api_key), timeout=60)
     if not r.ok:
         log.warning("CKAN package_search : HTTP %s", r.status_code)
         return None
@@ -60,12 +65,13 @@ def _find_via_search(http):
     return None
 
 
-def _find_via_candidates(http):
+def _find_via_candidates(http, api_key):
     """Repli : interroge les datasets connus un par un (package_show)."""
     for dataset in GTFS_DATASET_CANDIDATES:
         try:
-            r = http.get(f"{CKAN_BASE}/api/3/action/package_show",
-                         params={"id": dataset}, timeout=60)
+            r = http.get(f"{CKAN_API_BASE}/package_show",
+                         params={"id": dataset},
+                         headers=_auth_headers(api_key), timeout=60)
             if not r.ok:
                 log.warning("CKAN package_show %s : HTTP %s", dataset,
                             r.status_code)
@@ -81,22 +87,24 @@ def _find_via_candidates(http):
     return None
 
 
-def find_gtfs_static_url(http):
+def find_gtfs_static_url(http, api_key=None):
     """Trouve l'URL du dernier ZIP GTFS statique via l'API CKAN (recherche
     dynamique d'abord, datasets connus en repli)."""
     try:
-        found = _find_via_search(http)
+        found = _find_via_search(http, api_key)
     except requests.RequestException as exc:
         log.warning("CKAN package_search indisponible : %s", exc)
         found = None
     if found is None:
-        found = _find_via_candidates(http)
+        found = _find_via_candidates(http, api_key)
     if found is None:
         raise RuntimeError(
-            "Impossible de trouver le GTFS statique automatiquement. "
-            "Téléchargez le ZIP sur https://opendata.swiss (recherche : "
-            "« horaire GTFS2020 »), puis relancez avec "
-            "--gtfs-url /chemin/vers/GTFS.zip"
+            "Impossible de trouver le GTFS statique automatiquement (l'API "
+            "CKAN api.opentransportdata.swiss/ckan-api exige une clé dont le "
+            "produit CKAN-API est activé dans l'API Manager : --api-key / "
+            "OTD_API_KEY). Sinon, téléchargez le ZIP sur "
+            "https://data.opentransportdata.swiss/dataset/timetable-2026-gtfs2020 "
+            "puis relancez avec --gtfs-url /chemin/vers/GTFS.zip"
         )
     return found
 
@@ -231,16 +239,20 @@ def import_static_zip(Session_factory, zip_path):
     return True
 
 
-def ensure_static(Session_factory, http, gtfs_url=None, force=False):
+def ensure_static(Session_factory, http, gtfs_url=None, force=False,
+                  api_key=None):
     """S'assure qu'un GTFS statique est en base ; retourne les filtres TL."""
     if not force and get_meta(Session_factory, "static_feed_version"):
         return load_tl_maps(Session_factory)
     tmp = tempfile.mktemp(suffix=".zip")
     try:
         if gtfs_url and not gtfs_url.startswith("http"):
+            if not os.path.exists(gtfs_url):
+                raise RuntimeError(f"Fichier GTFS introuvable : {gtfs_url}")
             import_static_zip(Session_factory, gtfs_url)
         else:
-            _, url = (None, gtfs_url) if gtfs_url else find_gtfs_static_url(http)
+            _, url = ((None, gtfs_url) if gtfs_url
+                      else find_gtfs_static_url(http, api_key))
             download_file(http, url, tmp)
             import_static_zip(Session_factory, tmp)
     finally:

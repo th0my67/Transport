@@ -153,7 +153,118 @@ Schéma des tables :
 | `poll_log` | Journal de chaque requête GTFS-RT (ok, statut HTTP, volumétrie, durée, erreur) |
 | `meta` | Clés/valeurs internes (version du GTFS importé, date d'import) |
 
-## 6. Faire tourner en continu (service)
+## 6. Reproductibilité de l'étude (collecte sur 2 semaines)
+
+Cette section décrit la procédure complète pour reproduire une étude de
+ponctualité des lignes TL sur **14 jours**, à intervalle régulier, de manière
+entièrement rejouable par un tiers.
+
+### 6.1 Prérequis
+
+1. Compte gratuit sur <https://opentransportdata.swiss> + clé dans l'**API Manager**
+   (voir §1 et §3). **Deux produits doivent être activés** pour la procédure
+   entièrement automatique :
+   - **GTFS-RT** (obligatoire : flux temps réel, `Authorization: Bearer <clé>`) ;
+   - **CKAN-API** (optionnel : permet au collecteur de trouver et télécharger
+     seul le GTFS statique via `https://api.opentransportdata.swiss/ckan-api`).
+   Sans CKAN-API, téléchargez le ZIP à la main sur
+   <https://data.opentransportdata.swiss/dataset/timetable-2026-gtfs2020>
+   (ressource `GTFS_FP2026_*.zip` la plus récente) et passez `--gtfs-url`.
+2. Environnement identique : Python 3.10+, `pip install -e ".[dev]"`, code à un
+   commit donné (notez le hash `git rev-parse HEAD` dans votre rapport).
+
+### 6.2 Préparation de la base (une fois)
+
+```bash
+export OTD_API_KEY="votre-cle"
+tl-delay-collector --import-only            # importe l'horaire théorique TL
+tl-delay-collector --dry-run                # 1 requête de contrôle
+```
+
+Vérifiez dans les logs : « Lignes TL détectées : N » et « … courses TL » > 0.
+La base `tl_delays.db` contient alors `tl_routes`, `stops`, `stop_times` et
+`meta.static_feed_version` (voir §5 pour le schéma complet).
+
+### 6.3 Collecte sur 14 jours à intervalle régulier
+
+```bash
+# 14 jours, un poll toutes les 30 s, base dédiée à l'étude
+tl-delay-collector --db tl_delays.db --interval 30 --days 14
+```
+
+- **Intervalle** : 30 s par défaut. La plateforme limite à **5 requêtes/min
+  et par clé** ; le minimum supporté est donc 12 s (`--interval` est borné à
+  12 s). À 30 s, on consomme 2 requêtes/min — marge confortable.
+- **Volume attendu** : 14 j × 2 880 polls/j ≈ **40 320 requêtes**. Vérifiez en
+  fin de collecte :
+  ```sql
+  SELECT ok, COUNT(*) FROM poll_log GROUP BY ok;      -- quasi tout à ok=1
+  SELECT COUNT(*) FROM poll_log;                      -- ≈ 40320
+  SELECT MIN(ts), MAX(ts) FROM poll_log;              -- plage de 14 jours
+  ```
+- **Lancement en arrière-plan** : `nohup tl-delay-collector --days 14 \
+  > collector.out 2>&1 &` ou service systemd (§7). `Ctrl-C`/SIGTERM arrête
+  proprement ; les données déjà enregistrées sont conservées.
+- **Journal** : chaque requête est tracée dans `poll_log` (statut HTTP,
+  durée, volumétrie, erreur) et dans `tl_collector.log` — gardez ces deux
+  fichiers avec la base pour l'audit.
+
+### 6.4 Rafraîchissement de l'horaire théorique
+
+Le GTFS statique est re-téléchargé automatiquement toutes les 24 h
+(`--static-refresh-hours`). Les identifiants de courses changent chaque
+**lundi et jeudi à 15h00** : la version du feed est stockée dans
+`meta.static_feed_version` ; une version identique n'est pas réimportée.
+Si le téléchargement auto échoue en cours de collecte, le collecteur
+continue avec l'horaire en base et réessaie 1 h plus tard.
+
+### 6.5 Ce qui est enregistré à chaque poll
+
+Pour chaque entité du flux GTFS-RT « Trip Updates » correspondant à une
+course TL (§5) :
+
+- `trip_status` : statut de la course (annulée ou non, véhicule, nombre de
+  mises à jour) — upsert, clé `(start_date, trip_id)` ;
+- `stop_delays` : pour chaque arrêt de la course, les retards d'arrivée et
+  de départ **à la première observation** (`first_arr_delay`,
+  `first_dep_delay`) et **à la dernière** (`last_arr_delay`,
+  `last_dep_delay` — la prévision s'affinant à l'approche du bus, c'est
+  l'approximation de l'heure réelle) — upsert, clé
+  `(start_date, trip_id, stop_sequence)`.
+
+Les retards sont en **secondes** ; `start_date` est la date de service au
+format `YYYYMMDD` (fuseau Europe/Zurich). La plateforme n'historise rien :
+tout l'historique provient de vos polls.
+
+### 6.6 Analyse type (exemple reproductible)
+
+```python
+import pandas as pd
+from sqlalchemy import create_engine, select, func
+from tl_delay_collector.models import StopDelay, TlRoute
+
+engine = create_engine("sqlite:///tl_delays.db")
+q = (select(StopDelay.route_id, TlRoute.route_short_name,
+             func.avg(StopDelay.last_dep_delay).label("retard_moy_s"),
+             func.count().label("n"))
+     .join(TlRoute, TlRoute.route_id == StopDelay.route_id)
+     .where(StopDelay.last_dep_delay.is_not(None))
+     .group_by(StopDelay.route_id))
+df = pd.read_sql(q, engine)
+df["retard_moy_min"] = df["retard_moy_s"] / 60
+print(df.sort_values("retard_moy_min", ascending=False))
+```
+
+### 6.7 Checklist de reproductibilité
+
+- [ ] Même commit du code (`git rev-parse HEAD` noté)
+- [ ] Même version de Python et des paquets (`pip freeze > requirements-lock.txt`)
+- [ ] Clé API avec produits GTFS-RT (+ CKAN-API si auto) activés
+- [ ] `--interval 30 --days 14` (ou valeurs explicitées dans le rapport)
+- [ ] Base `tl_delays.db`, `tl_collector.log` et `poll_log` archivés ensemble
+- [ ] `SELECT ok, COUNT(*) FROM poll_log GROUP BY ok` → taux d'erreur ~0
+
+## 7. Faire tourner en continu (service)
 
 Exemple d'unité systemd `/etc/systemd/tl-collector.service` :
 
@@ -181,7 +292,7 @@ journalctl -u tl-collector -f     # suivre les logs
 
 Sans systemd : `nohup tl-delay-collector --days 0 > collector.out 2>&1 &`
 
-## 7. Limites et remarques
+## 8. Limites et remarques
 
 - Le flux GTFS-RT est limité à **5 requêtes/minute et par clé** : l'intervalle
   minimum est donc de 12 s (30 s par défaut, marge confortable).
@@ -193,16 +304,16 @@ Sans systemd : `nohup tl-delay-collector --days 0 > collector.out 2>&1 &`
   backend (PostgreSQL), remplacez les `sqlite_insert` dans `repository.py` par
   l'insert du dialecte correspondant.
 
-## 8. Dépannage
+## 9. Dépannage
 
 | Symptôme | Cause probable | Solution |
 |---|---|---|
 | « Aucune course TL dans ce poll » | Mauvais filtre agence | Lancez `--import-only`, lisez la liste des entreprises, ajustez `AGENCY_NAME_HINTS` dans `config.py` |
 | Erreur HTTP 401 | Clé API invalide/expirée | Vérifiez `OTD_API_KEY` (le collecteur s'arrête alors volontairement) |
-| Échec de téléchargement du GTFS statique | CKAN indisponible ou dataset renommé | Le collecteur cherche d'abord le dataset GTFS le plus récent via la recherche CKAN, puis ses noms connus ; en dernier recours, téléchargez le ZIP sur <https://opendata.swiss> (recherche « horaire GTFS2020 ») et relancez avec `--gtfs-url /chemin/GTFS.zip` |
+| Échec de téléchargement du GTFS statique (HTTP 403 CKAN, ou « Access to this API has been disallowed ») | `data.opentransportdata.swiss/api/3/action` renvoie 403 aux clients non navigateur ; l'API officielle `https://api.opentransportdata.swiss/ckan-api` exige une clé dont le produit **CKAN-API** est activé dans l'API Manager (<https://api-manager.opentransportdata.swiss>) | Le collecteur interroge `api.opentransportdata.swiss/ckan-api` avec `--api-key` / `OTD_API_KEY` (recherche du dataset GTFS le plus récent, puis noms connus) ; en dernier recours, téléchargez le ZIP sur <https://data.opentransportdata.swiss/dataset/timetable-2026-gtfs2020> et relancez avec `--gtfs-url /chemin/GTFS.zip` |
 | Base vide après plusieurs heures | Pas de trafic TL à cette heure | Normal la nuit ; vérifiez `poll_log` (`SELECT ok, COUNT(*) FROM poll_log GROUP BY ok`) |
 
-## 9. Structure du projet
+## 10. Structure du projet
 
 ```
 src/tl_delay_collector/
@@ -218,7 +329,7 @@ src/tl_delay_collector/
 tests/               # tests unitaires hors réseau (pytest)
 ```
 
-## 10. Tests
+## 11. Tests
 
 ```bash
 pip install -e ".[dev]"
