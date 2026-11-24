@@ -12,6 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "requests>=2.28",
     "SQLAlchemy>=2.0",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
